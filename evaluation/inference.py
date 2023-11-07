@@ -8,19 +8,31 @@ import torch
 from tqdm import tqdm
 import sys
 import pdb
-from evaluation.math_normalization import *
+from math_normalization import *
+from str2bool import str2bool
+gsm8k_pattern  = re.compile(r"#### (.*)$")
+math_pattern = re.compile(r'\\boxed{(.*)}')
 
-def get_results(pred_file, dev_set):
+def get_results(pred_file, dataset_name):
     def test_answer(pred_str, ans_str):
-        pattern = "#### (.*)$"
-
         if "Question" in pred_str:
             pred_str = pred_str.split("Question")[0]
+        if 'question' in pred_str:
+            pred_str = pred_str.split('question')[0]
 
-        preds = re.findall(pattern, pred_str)
+        preds = re.findall(gsm8k_pattern, pred_str)
         pred = preds[-1] if len(preds) >= 1 else ""
-        if "</s>" in pred:
+
+        if pred == "":
+            preds = re.findall(math_pattern,pred_str)
+            pred = preds[-1] if len(preds) >= 1 else ""
+
+        if pred.endswith('</s>'):
             pred = pred[:-4]
+        if pred.endswith('</s'):
+            pred = pred[:-3]
+        if pred.endswith('</'):
+            pred = pred[:-2]
         
         gold = ans_str
         pred = normalize_final_answer(pred)
@@ -75,13 +87,13 @@ def get_results(pred_file, dev_set):
                 print("    " + key.split(",")[-1]+ " : " + str(acc))
         return results, preds, golds
 
-    if dev_set in ['all', 'gsm8k', 'math', 'mathgpt', 'gsm8k_robust']:
+    if dataset_name in ['all', 'gsm8k', 'math', 'mathgpt', 'gsm8k_robust']:
         golds_str = []
         properties = []
-        with open(f'./data/test/test.jsonl', 'r', encoding='utf-8') as f:
+        with open('./data/test/test.jsonl', 'r', encoding='utf-8') as f:
             for line in f:
-                if dev_set != "all":
-                    if json.loads(line)['source'].lower() == dev_set:
+                if dataset_name != "all":
+                    if json.loads(line)['source'].lower() == dataset_name:
                         golds_str.append(json.loads(line)['target'])
                         properties.append({"source": json.loads(line)['source'], "tag": json.loads(line)['tag']})
                 else:
@@ -108,45 +120,67 @@ def get_results(pred_file, dev_set):
         raise NotImplementedError("Evaluation not supported.")
 
 
-def get_raw_inputs(dev_set):
+def get_raw_inputs(dataset_name):
     # in this function, we will get the raw queries for a target dev set
     data = []
-    if dev_set in ['all', 'gsm8k', 'math', 'mathgpt', 'gsm8k_robust']:
-        with open(f'./data/test/test.jsonl') as f:
+    if dataset_name in ['all', 'gsm8k', 'math', 'mathgpt', 'gsm8k_robust']:
+        with open('./data/test/test.jsonl') as f:
             for line in jsonlines.Reader(f):
                 data.append(line)
-        if dev_set != 'all':
-            data = [line for line in data if line['source'].lower() == dev_set]
+        if dataset_name != 'all':
+            data = [line for line in data if line['source'].lower() == dataset_name]
     else:
         raise ValueError
 
     prompt_list = [line['question'] for line in data]
     return prompt_list
 
+def get_example(dataset_name,n_example,seed=None):
+    
+    examples=[]
+    for line in open('./data/{}/train.jsonl'.format(dataset_name)).readlines():
+        examples.append(json.loads(line))
+    if seed:
+        return examples[seed:(seed+n_example)%len(examples)]
+    else:
+        return random.choices(examples,k=n_example)
+    
 
-prompt_mapping = {
-    "math-single": "Question:\n{input}\nAnswer:\nLet's think step by step.\n",
+
+template_mapping = {
+    "math-single": "Question:\n{question}\nAnswer:\nLet's think step by step. {answer}",
+    "alpaca": "Below is an instruction that describes a task. Write a response that appropriately completes the request.\n\n### Instruction:\n{question}\n\n### Response: Let’s think step by step. {answer}"
 }
 
 if __name__ == '__main__':
     # set args
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_dir', type=str, required=True)
-    parser.add_argument('--max_tokens', type=int, default=2048)
+    parser.add_argument('--max_tokens', type=int, default=1024)
     parser.add_argument('--temperature', type=float, default=0.0)
     parser.add_argument('--top_p', type=float, default=1.0)
     parser.add_argument('--presence_penalty', type=float, default=0.0)
     parser.add_argument('--frequency_penalty', type=float, default=0.0)
-    parser.add_argument('--output_file_name', type=str, default='output.json')
+    parser.add_argument('--output_file', type=str, default='output.json')
     parser.add_argument('--stop', type=str, nargs='+', default=[], help="you can pass one or multiple stop strings to halt the generation process.")
-    parser.add_argument('--dev_set', type=str, default='all')
+    parser.add_argument('--dataset_name', type=str, default='all')
     parser.add_argument('--prompt_type', type=str, default='math-single')
     parser.add_argument('--sample_num', type=int, default=-1, )
-    parser.add_argument('--eval_only', type=bool, default=False)
-    parser.add_argument('--max_num_batched_tokens', type=int, default=2048)
+    parser.add_argument('--eval_only', type=str2bool, default=False)
+    parser.add_argument('--max_num_batched_tokens', type=int, default=4096)
+    parser.add_argument('--n_example', type=int, default=0)
+    parser.add_argument("--seed", type=int,default=0)
+    parser.add_argument("--figure_geometry_only",type=str2bool,default=False)
     args = parser.parse_args()
 
-    if args.eval_only == False:
+    for key,value in vars(args).items():
+        print("{} == {}".format(key,value))
+    import random
+    random.seed(args.seed)
+
+    # if args.eval_only == False:
+    if not os.path.exists(args.output_file):
+        print("not cached! decode")
         # part 1 we set the model
         num_gpus = torch.cuda.device_count()
         another_args = {'max_num_batched_tokens': args.max_num_batched_tokens} 
@@ -158,11 +192,21 @@ if __name__ == '__main__':
                                             frequency_penalty=args.frequency_penalty)
 
         # part 3 we prepare raw queries and wrap them with target prompt
-        raw_queries = get_raw_inputs(args.dev_set)
-        prompt = prompt_mapping[args.prompt_type]
-        processed_prompts = [prompt.format(input=query) for query in raw_queries]
-        processed_prompts = processed_prompts[:args.sample_num] if args.sample_num > 0 else processed_prompts
+        raw_queries = get_raw_inputs(args.dataset_name)
+        if args.figure_geometry_only:
+            assert 'geometry' in args.output_file
+            raw_queries = [x for x in raw_queries if '[asy]' in x]
+        
 
+
+        template = template_mapping[args.prompt_type]
+        prefix=''
+        examples = get_example(args.dataset_name,args.n_example)
+        for example in examples:
+            prefix += template.format(question = example['question'], answer = example['answer'])
+        processed_prompts = [prefix+  template.format(question = query, answer ='') for query in raw_queries]
+        processed_prompts = processed_prompts[:args.sample_num] if args.sample_num > 0 else processed_prompts
+        print(processed_prompts[:2])
         # part 4 we generate, note that vllm is async so extra sorting is needed
         outputs = llm.generate(processed_prompts, sampling_params)
         sorted_outputs = sorted(outputs, key=lambda output: int(output.request_id))
@@ -170,14 +214,14 @@ if __name__ == '__main__':
 
         # part 5 we save the results, always be {'id':id,'response':response}
         # if dir of output file is not exist, it will be created automatically
-        if not os.path.exists(os.path.dirname(args.output_file_name)):
-            os.makedirs(os.path.dirname(args.output_file_name))
-        with open(args.output_file_name, "w") as f:
+        if not os.path.exists(os.path.dirname(args.output_file)):
+            os.makedirs(os.path.dirname(args.output_file))
+        with open(args.output_file, "w") as f:
             for id, output in enumerate(sorted_outputs):
             # note that `prompt`s are the wrapped ones
                 f.write(json.dumps({'id': id, 'prompt': output.prompt, 'response': output.outputs[0].text}) + '\n')
         print('>>>>>> writing prediction done')
 
     # part 6 evaluate, I guess this should be done in a separate script
-    get_results(args.output_file_name, args.dev_set)
+    get_results(args.output_file, args.dataset_name)
     print('>>>>>> evaluation done')

@@ -1,0 +1,6 @@
+https://huggingface.co/WizardLM/WizardMath-7B-V1.0/resolve/main/pytorch_model-00001-of-00003.bin
+  out=pytorch_model-00001-of-00003.bin
+https://huggingface.co/WizardLM/WizardMath-7B-V1.0/resolve/main/pytorch_model-00002-of-00003.bin
+  out=pytorch_model-00002-of-00003.bin
+https://huggingface.co/WizardLM/WizardMath-7B-V1.0/resolve/main/pytorch_model-00003-of-00003.bin
+  out=pytorch_model-00003-of-00003.bin
