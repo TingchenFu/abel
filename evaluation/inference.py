@@ -1,4 +1,6 @@
 from vllm import LLM, SamplingParams
+from transformers import AutoModelForCausalLM
+from peft import PeftModel
 import os
 import re
 import json
@@ -155,7 +157,8 @@ template_mapping = {
 if __name__ == '__main__':
     # set args
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_dir', type=str, required=True)
+    parser.add_argument('--model_name_or_path', type=str, required=True)
+    parser.add_argument('--peft_model_path',type=str,default=None)
     parser.add_argument('--max_tokens', type=int, default=1024)
     parser.add_argument('--temperature', type=float, default=0.0)
     parser.add_argument('--top_p', type=float, default=1.0)
@@ -182,9 +185,19 @@ if __name__ == '__main__':
     if not os.path.exists(args.output_file):
         print("not cached! decode")
         # part 1 we set the model
+        if args.peft_model_path:
+            model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path)
+            peft_model = PeftModel.from_pretrained(model, args.peft_model_path)
+            peft_model = peft_model.merge_and_unload()
+            peft_model.save_pretrained(os.path.join(args.peft_model_path,'peft_intergrated'))
+            print("PEFT intergrated!!")
+           
         num_gpus = torch.cuda.device_count()
         another_args = {'max_num_batched_tokens': args.max_num_batched_tokens} 
-        llm = LLM(model=args.model_dir, tensor_parallel_size=num_gpus,**another_args)
+        llm = LLM(model =  os.path.join(args.peft_model_path,'peft_intergrated') if args.peft_model_path else args.model_name_or_path,
+                tokenizer= args.model_name_or_path, 
+                tensor_parallel_size=num_gpus,
+                **another_args)
         print('>>>>>> model loaded')
         # part 2 we set the sampling params
         sampling_params = SamplingParams(temperature=args.temperature, top_p=args.top_p, max_tokens=args.max_tokens,
@@ -225,3 +238,6 @@ if __name__ == '__main__':
     # part 6 evaluate, I guess this should be done in a separate script
     get_results(args.output_file, args.dataset_name)
     print('>>>>>> evaluation done')
+
+    os.system('rm -rf '+os.path.join(args.peft_model_path,'peft_intergrated'))
+    print('>>>>>> PEFT intergrated model removed')
